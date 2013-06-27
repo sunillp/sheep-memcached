@@ -12,6 +12,7 @@ SHEEP improves performance of multi-get queries by employing two methods:
 2.	Data colocation. Sheep tries to store data associated with a user and its friends on the same storage server, so that only one server (or very few storage servers) is contacted for serving the request. In memcached/redis data is distributed randomly across multiple storage servers and in the worst case all storage servers are contacted for serving the request. Data colocation reduces number of network packets sent out and received. It also complements “Data aggregation on server” as lot of data (almost all) get filtered on server and very few data flows over network.
 
 SHEEP advantages:
+
 1.	Client consolidation/Cost Reduction (with same amount of hardware we can get higher performance or with less amount of hardware we can get same performance).
 2.	Sustained high performance at peak loads. SHEEP is virtually unaffected by peak loads as it ensures that very less data flow over network from storage server to client thereby avoiding network saturation.
 
