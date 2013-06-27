@@ -2,7 +2,7 @@ sheep-memcached
 ===============
 SHEEP Enhancements in Memcached:
 
-(Note: SHEEP is a paper published by research team from Yahoo! Labs, Barcelona)
+(Note: SHEEP is a paper published by a research team from Yahoo! Labs, Barcelona)
 
 SHEEP is a distributed in-memory key-value store just like Memcached and Redis, optimized for multi-get queries, which are widely used in social networking systems. In multi-get queries, data associated with all the friends of a user is read and processed on the client. So a single “multi-get” query is issued to read data of all friends instead of sending a “get” query for each friend. This way if multiple friends data resides on a data storage server, then all this data (of multiple friends) can be retrieved in a single response. This saves sending multiple requests to a server and receiving/processing multiple responses from a server. If client is single threaded this also avoids RTT (round trip time) associated with multiple requests.
 
