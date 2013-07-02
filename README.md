@@ -23,7 +23,7 @@ We have made enhancements proposed in SHEEP in memcached. This is done because o
 How is this different or better than Redis + Lua:
 
 “Data aggregation on server” that we have implemented in memcached is similar to executing Lua script on server in Redis. Our approach has following advantages over Redis:
--	Redis being single-threaded does not scale up well with number of cores. We often need to run multiple instances of Redis on each server core. So each server core ends up doing “data aggregation” independently for the same query and each sends filtered data separately to client though all run on the same server.
+-	Redis being single-threaded does not scale up well with number of cores. We often need to run multiple instances of Redis (one on each server core). So each server core ends up doing “data aggregation” independently for the same query and each sends filtered data separately to client though all run on the same server.
 -	As opposed to this Memcached being multi-threaded scales up well with number of cores. Each server performs “data aggregation” just once for a given query and sends very small set of filtered data to client.
 -	Besides in Memcached there is one more option that is to keep data in de-serialized form, which saves lot of CPU cycles that are generally spent in de-serializing data in query processing critical path. (Though here memcached uses quite a lot of additional memory)
 
