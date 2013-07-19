@@ -1,0 +1,11 @@
+message ArticleReadRecord {
+        optional string userId = 1;
+        optional int64 timeStamp = 2;
+        optional string articleId = 3;
+}
+
+message View {
+        optional int32 maxSize = 1 [default = 100];
+        optional int32 oldestEntry = 2 [default = 0];
+        repeated ArticleReadRecord entries = 3;
+}

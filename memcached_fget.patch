@@ -1,0 +1,826 @@
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/configure memcached-1.4.13/configure
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/configure	2012-02-02 13:24:20.000000000 -0800
++++ memcached-1.4.13/configure	2013-06-22 00:45:54.000000000 -0700
+@@ -5235,7 +5235,7 @@ else
+   le_found=no
+   for ledir in $trylibeventdir "" $prefix /usr/local ; do
+     LDFLAGS="$saved_LDFLAGS"
+-    LIBS="-levent $saved_LIBS"
++    LIBS="-levent $saved_LIBS -ldl"
+ 
+     # Skip the directory if it isn't there.
+     if test ! -z "$ledir" -a ! -d "$ledir" ; then
+@@ -5305,7 +5305,7 @@ fi
+ fi
+ { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_libevent_dir" >&5
+ $as_echo "$ac_cv_libevent_dir" >&6; }
+-LIBS="-levent $LIBS"
++LIBS="-levent $LIBS -ldl"
+ if test $ac_cv_libevent_dir != "(system)"; then
+   if test -d "$ac_cv_libevent_dir/lib" ; then
+     LDFLAGS="-L$ac_cv_libevent_dir/lib $LDFLAGS"
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/filter.c memcached-1.4.13/filter.c
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/filter.c	1969-12-31 16:00:00.000000000 -0800
++++ memcached-1.4.13/filter.c	2013-07-09 06:59:20.000000000 -0700
+@@ -0,0 +1,340 @@
++/* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
++/*
++ *  filter.c - optimizations to memcached (data filtering at server -
++ *             helps in multi-get operations)
++ *
++ *  Authors:
++ *      Sunil Patil <sunillp@yahoo-inc.com, sunillp@gmail.com>
++ */
++
++#include "filter.h"
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <dlfcn.h>
++#include "memcached.h"
++
++enum multi_get_opt {
++    NO_FILTERING = 1,                   /* No data filtering at server */
++    MEMCACHED_FILTERING = 2,            /* Data filtering at server enable (no deserialized data) */
++    MEMCACHED_DATAOPT_FILTERING = 4,    /* Data filtering at server enable (with deserialized data) */
++};
++
++#define INITIAL_MSGLIST_SIZE        100
++#define FILTER_FLAGS                6  /* (bits=110) */
++#define DATA_DESERIALIZATON_FLAGS   4  /* (bits=100) */
++#define FILTERING_ENABLED()            (multi_get_opt_flags & FILTER_FLAGS)
++#define DATA_DESERIALIZATON_ENABLED()  (multi_get_opt_flags & DATA_DESERIALIZATON_FLAGS)
++
++int multi_get_opt_flags = NO_FILTERING;
++char *multi_get_opt_filterlibpath = NULL;
++char *multi_get_opt_filterlib = NULL;
++
++typedef unsigned char uint8_t;
++
++union deserialize_u {
++    void *(*func)(uint8_t *, int);
++    void *funcp;
++};
++
++union free_msg_u {
++    void (*func)(void *);
++    void *funcp;
++};
++
++union readfilter_u {
++    void (*func)(void **, int, void **, int *, void *(*)(int), int, char **);
++    void *funcp;
++};
++
++struct fliblist_s {
++    char *flibname;
++    union deserialize_u deserialize;
++    union free_msg_u free_msg;
++    union readfilter_u readfilter;
++    struct fliblist_s *next;
++};
++
++struct fliblist_s *head = NULL;
++struct fliblist_s *firstlib = NULL;
++
++static struct fliblist_s *load_library(char *);
++
++int is_filtering_enabled(void)
++{
++    return FILTERING_ENABLED();
++}
++
++void *get_flib(char *flibname)
++{
++    struct fliblist_s *flib = head;
++
++    if (strcmp(flibname, "default") == 0)
++        return head;
++    while (flib != NULL) {
++        if (strcmp(flib->flibname, flibname) == 0)
++            return flib;
++        flib = flib->next;
++    }
++    if (flib == NULL) {
++        flib = load_library(flibname);
++    }
++    
++    return (void *) flib;
++}
++
++static void *alloc_func(int len)
++{
++    char *buf = NULL;
++    int tmp_nsuffix = 40;
++    char *tmp_dataend = "\r\n";
++    buf = calloc(tmp_nsuffix + len + strlen(tmp_dataend), sizeof(char));
++    if (buf != NULL)
++        return (void *) &buf[40];
++    return (void *) buf;
++}
++
++static void get_filtered_msg(void *flib, void **msglist, int i, char *suffix, void **msg, int *mstart, int *mlen, int numParam, char **params)
++{
++    *msg = NULL;
++    *mstart = 0;
++    *mlen = 0;
++
++    if (!FILTERING_ENABLED() || i <= 0)
++        return;
++
++    int tflags = 0;
++    sscanf(suffix, "%d", &tflags);
++
++    int msglen = 0;
++    int tmp_nsuffix = 40;
++    char *tmp_dataend = "\r\n";
++    ((struct fliblist_s *) flib)->readfilter.func(msglist, i, msg, &msglen, alloc_func, numParam, params);
++    if (*msg == NULL || msglen == 0)
++        return;
++    *msg = (void *) ((char *) *msg - tmp_nsuffix);
++
++    char tbuf[40];
++    int tbufsize = 0;
++    tbufsize = (uint8_t) snprintf(tbuf, tmp_nsuffix, " %d %d\r\n", tflags, msglen);
++    memcpy((char *) *msg + tmp_nsuffix - tbufsize, tbuf, tbufsize);
++    memcpy((char *) *msg + tmp_nsuffix + msglen, tmp_dataend, strlen(tmp_dataend));
++    *mstart = tmp_nsuffix - tbufsize;
++    *mlen = tbufsize + msglen + strlen(tmp_dataend);
++
++    return;
++}
++
++static void free_msg_multi(void *flib, void **msglist, int len)
++{
++    int j = 0;
++    if (msglist == NULL)
++        return;
++
++    for (j = 0; j < len; j++)
++        ((struct fliblist_s *) flib)->free_msg.func(msglist[j]);
++    return;
++}
++
++void free_msglist(void *flib, void ***msglist, int i)
++{
++    if (*msglist != NULL) {
++        if (!DATA_DESERIALIZATON_ENABLED() && i > 0) {
++            free_msg_multi(flib, *msglist, i);
++        }
++        free(*msglist);
++        *msglist = NULL;
++    }
++
++    return;
++}
++
++int addto_msglist(void *flib, void ***msglist, int *msglistlen, int i, void *it_msg, char *it_data, int it_nbytes)
++{
++    void **tmsglist = NULL;
++    void **newmsglist = NULL;
++
++    if (!FILTERING_ENABLED())
++        return 1;
++
++    if (*msglist == NULL) {
++        *msglistlen = INITIAL_MSGLIST_SIZE;
++        *msglist = (void **) malloc(sizeof (void *) * (*msglistlen));
++        if (*msglist == NULL)
++            return 1;
++    }
++    if (i >= *msglistlen) {
++        *msglistlen = *msglistlen * 2;
++        newmsglist = (void **) realloc(*msglist, sizeof (void *) * (*msglistlen));
++        if (newmsglist == NULL) {
++            free_msglist(flib, msglist, i);
++            return 1;
++        }
++        *msglist = newmsglist;
++    }
++    tmsglist = *msglist;
++    if (DATA_DESERIALIZATON_ENABLED()) {
++        // Deserialized data is available in "it_msg"
++        tmsglist[i] = it_msg;
++        if (tmsglist[i] == NULL)
++            return 1;
++    } else {
++        // Need to do filtering on serialized data by first deserializing it.
++        tmsglist[i] = ((struct fliblist_s *) flib)->deserialize.func((uint8_t *) it_data, it_nbytes - 2); // Last 2 bytes contain "\r\n", ignore that
++        if (tmsglist[i] == NULL)
++            return 1;
++    }
++
++    return 0;
++}
++
++void deserialize_item_data(char *it_data, int it_nbytes, void **it_msg)
++{
++    if (DATA_DESERIALIZATON_ENABLED()) {
++        if (*it_msg) {
++            firstlib->free_msg.func(*it_msg);
++            *it_msg = NULL;
++        }
++        *it_msg = firstlib->deserialize.func((uint8_t *) it_data, it_nbytes - 2); // Last 2 bytes contain "\r\n", ignore that
++        if (*it_msg == NULL) {
++            // nothing to be done
++        }
++    }
++
++    return;
++}
++
++static struct fliblist_s *load_library(char *flibname)
++{
++    struct fliblist_s *flib = NULL;
++
++    void *dlhandle = dlopen(flibname, RTLD_NOW);
++    if (dlhandle == NULL) {
++        fprintf(stderr, "FilterLib Error: Could not open lib %s\n", flibname);
++        return NULL;
++    }
++    void *deserialize = dlsym(dlhandle, "deserialize");
++    if (deserialize == NULL) {
++        fprintf(stderr, "FilterLib Error: Could not find function deserialize in lib %s\n", flibname);
++        return NULL;
++    }
++    void *free_msg = dlsym(dlhandle, "free_msg");
++    if (free_msg == NULL) {
++        fprintf(stderr, "FilterLib Error: Could not find function free_msg in lib %s\n", flibname);
++        return NULL;
++    }
++    void *readfilter = dlsym(dlhandle, "readfilter");
++    if (readfilter == NULL) {
++        fprintf(stderr, "FilterLib Error: Could not find function readfilter in lib %s\n", flibname);
++        return NULL;
++    }
++
++    flib = (struct fliblist_s *) malloc(sizeof (struct fliblist_s) * 1);
++    if (flib == NULL) {
++        return NULL;
++    }
++    flib->flibname = strdup(flibname);
++    if (flib->flibname == NULL)
++        return NULL;
++    flib->deserialize.funcp = deserialize;
++    flib->free_msg.funcp = free_msg;
++    flib->readfilter.funcp = readfilter;
++    flib->next = head;
++    if (head == NULL) {
++        firstlib = flib;
++    }
++    head = flib;
++
++    return flib;
++}
++
++int set_function_pointers(void)
++{
++    if (FILTERING_ENABLED() && multi_get_opt_filterlibpath == NULL) {
++        // -x option was specified i.e. filtering was enabled but -y option i.e. filterlibpath was not specified.
++        fprintf(stderr, "-x <num> -y <filterlib-path>: -x and -y options must be used together\n");
++        return 1;
++    }
++    if (FILTERING_ENABLED()) {
++        // Filtering is enabled.
++        if (NULL == load_library(multi_get_opt_filterlib)) {
++            return 1;
++        }
++    }
++
++    return 0;
++}
++
++int set_multi_get_opt_vars(char *optarg)
++{
++    if (multi_get_opt_flags == NO_FILTERING) {
++        fprintf(stderr, "-x <num> -y <filterlib-path>: -x and -y options must be used together\n");
++        return 1;
++    }
++    multi_get_opt_filterlibpath = strdup(optarg);
++    if (multi_get_opt_filterlibpath == NULL) {
++        fprintf(stderr, "multi_get_opt_filterlibpath allocation failed\n");
++        return 1;
++    }
++
++    char path[2048];
++    memset(path, 0, sizeof (path));
++    strcpy(path, multi_get_opt_filterlibpath);
++    strcat(path, "/libfilter.so");
++    FILE *fp = NULL;
++    if ((fp = fopen(path, "r")) == NULL) {
++        fprintf(stderr, "-x <num> -y <filterlib-path>: Library not found %s\n", path);
++        return 1;
++    }
++    fclose(fp);
++    multi_get_opt_filterlib = strdup(path);
++    if (multi_get_opt_filterlib == NULL) {
++        fprintf(stderr, "multi_get_opt_filterlib allocation failed\n");
++        return 1;
++    }
++
++    return 0;
++}
++
++int set_multi_get_opt_flags(char *optarg)
++{
++    switch (atoi(optarg)) {
++        case 1:
++            multi_get_opt_flags = MEMCACHED_FILTERING;
++            break;
++        case 2:
++            multi_get_opt_flags = MEMCACHED_DATAOPT_FILTERING;
++            break;
++        default:
++            fprintf(stderr, "-x <num> -y <filterlib-path>: <num> must be 1 or 2\n");
++            return 1;
++    }
++
++    return 0;
++}
++
++int add_filtered_msg(void *flib, void *tc, void ***msglist, int i, void *tit, char *keys_arr, int keys_len, add_iov_ptr add_iov, int numParam, char **params)
++{
++    void *msg = NULL;
++    int mstart = 0;
++    int mlen = 0;
++    int ret = 1;
++    conn *c = (conn *) tc;
++    item *it = (item *) tit;
++
++    if (c != NULL && *msglist != NULL && it != NULL && i > 0) {
++        get_filtered_msg(flib, *msglist, i, ITEM_suffix(it), &msg, &mstart, &mlen, numParam, params);
++        if (msg != NULL && mstart != 0 && mlen != 0) {
++            c->filteredmsg = msg;
++            if (add_iov(c, "VALUE ", 6) != 0 ||
++                add_iov(c, keys_arr, keys_len) != 0 ||
++                add_iov(c, (char *) msg + mstart, mlen) != 0)
++                    ret = 2;
++                else
++                    ret = 0;
++        }
++    }
++    free_msglist(flib, msglist, i);
++
++    return ret;
++}
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/filter.h memcached-1.4.13/filter.h
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/filter.h	1969-12-31 16:00:00.000000000 -0800
++++ memcached-1.4.13/filter.h	2013-06-23 10:32:30.000000000 -0700
+@@ -0,0 +1,23 @@
++/* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
++/*
++ *  filter.h - optimizations to memcached (data filtering at server -
++ *             helps in multi-get operations)
++ *
++ *  Authors:
++ *      Sunil Patil <sunillp@yahoo-inc.com, sunillp@gmail.com>
++ */
++
++#define FILTERGET_FAIL 0
++#define FILTERGET_SUCCESS 1
++
++typedef int (*add_iov_ptr)(void *, const void *, int);
++
++int is_filtering_enabled(void);
++void *get_flib(char *);
++int addto_msglist(void *, void ***, int *, int, void *, char *, int);
++void free_msglist(void *, void ***, int);
++int add_filtered_msg(void *, void *, void ***, int, void *, char *, int, add_iov_ptr, int, char **);
++void deserialize_item_data(char *, int, void **);
++int set_function_pointers(void);
++int set_multi_get_opt_vars(char *);
++int set_multi_get_opt_flags(char *);
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/Makefile.in memcached-1.4.13/Makefile.in
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/Makefile.in	2012-02-02 13:24:19.000000000 -0800
++++ memcached-1.4.13/Makefile.in	2013-06-22 00:45:54.000000000 -0700
+@@ -72,7 +72,8 @@ PROGRAMS = $(bin_PROGRAMS) $(noinst_PROG
+ am__memcached_SOURCES_DIST = memcached.c memcached.h hash.c hash.h \
+ 	slabs.c slabs.h items.c items.h assoc.c assoc.h thread.c \
+ 	daemon.c stats.c stats.h util.c util.h trace.h cache.h \
+-	sasl_defs.h cache.c solaris_priv.c sasl_defs.c
++	sasl_defs.h cache.c solaris_priv.c sasl_defs.c \
++	filter.c filter.h
+ @BUILD_CACHE_TRUE@am__objects_1 = memcached-cache.$(OBJEXT)
+ @BUILD_SOLARIS_PRIVS_TRUE@am__objects_2 =  \
+ @BUILD_SOLARIS_PRIVS_TRUE@	memcached-solaris_priv.$(OBJEXT)
+@@ -82,12 +83,14 @@ am_memcached_OBJECTS = memcached-memcach
+ 	memcached-items.$(OBJEXT) memcached-assoc.$(OBJEXT) \
+ 	memcached-thread.$(OBJEXT) memcached-daemon.$(OBJEXT) \
+ 	memcached-stats.$(OBJEXT) memcached-util.$(OBJEXT) \
++	memcached-filter.$(OBJEXT) \
+ 	$(am__objects_1) $(am__objects_2) $(am__objects_3)
+ memcached_OBJECTS = $(am_memcached_OBJECTS)
+ am__memcached_debug_SOURCES_DIST = memcached.c memcached.h hash.c \
+ 	hash.h slabs.c slabs.h items.c items.h assoc.c assoc.h \
+ 	thread.c daemon.c stats.c stats.h util.c util.h trace.h \
+-	cache.h sasl_defs.h cache.c solaris_priv.c sasl_defs.c
++	cache.h sasl_defs.h cache.c solaris_priv.c sasl_defs.c \
++	filter.c filter.h
+ @BUILD_CACHE_TRUE@am__objects_4 = memcached_debug-cache.$(OBJEXT)
+ @BUILD_SOLARIS_PRIVS_TRUE@am__objects_5 = memcached_debug-solaris_priv.$(OBJEXT)
+ @ENABLE_SASL_TRUE@am__objects_6 = memcached_debug-sasl_defs.$(OBJEXT)
+@@ -98,6 +101,7 @@ am__objects_7 = memcached_debug-memcache
+ 	memcached_debug-thread.$(OBJEXT) \
+ 	memcached_debug-daemon.$(OBJEXT) \
+ 	memcached_debug-stats.$(OBJEXT) memcached_debug-util.$(OBJEXT) \
++	memcached_debug-filter.$(OBJEXT) \
+ 	$(am__objects_4) $(am__objects_5) $(am__objects_6)
+ am_memcached_debug_OBJECTS = $(am__objects_7)
+ memcached_debug_OBJECTS = $(am_memcached_debug_OBJECTS)
+@@ -313,6 +317,7 @@ timedrun_SOURCES = timedrun.c
+ memcached_SOURCES = memcached.c memcached.h hash.c hash.h slabs.c \
+ 	slabs.h items.c items.h assoc.c assoc.h thread.c daemon.c \
+ 	stats.c stats.h util.c util.h trace.h cache.h sasl_defs.h \
++	filter.c filter.h \
+ 	$(am__append_1) $(am__append_3) $(am__append_4)
+ memcached_debug_SOURCES = $(memcached_SOURCES)
+ memcached_CPPFLAGS = -DNDEBUG
+@@ -457,6 +462,7 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached-stats.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached-thread.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached-util.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached-filter.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-assoc.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-cache.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-daemon.Po@am__quote@
+@@ -469,6 +475,7 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-stats.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-thread.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-util.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/memcached_debug-filter.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sizes.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/testapp.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/timedrun.Po@am__quote@
+@@ -523,6 +530,13 @@ memcached-slabs.o: slabs.c
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o memcached-slabs.o `test -f 'slabs.c' || echo '$(srcdir)/'`slabs.c
+ 
++memcached-filter.o: filter.c
++@am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT memcached-filter.o -MD -MP -MF $(DEPDIR)/memcached-filter.Tpo -c -o memcached-filter.o `test -f 'filter.c' || echo '$(srcdir)/'`filter.c
++@am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached-filter.Tpo $(DEPDIR)/memcached-filter.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='filter.c' object='memcached-filter.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o memcached-filter.o `test -f 'filter.c' || echo '$(srcdir)/'`filter.c
++
+ memcached-slabs.obj: slabs.c
+ @am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT memcached-slabs.obj -MD -MP -MF $(DEPDIR)/memcached-slabs.Tpo -c -o memcached-slabs.obj `if test -f 'slabs.c'; then $(CYGPATH_W) 'slabs.c'; else $(CYGPATH_W) '$(srcdir)/slabs.c'; fi`
+ @am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached-slabs.Tpo $(DEPDIR)/memcached-slabs.Po
+@@ -530,6 +544,13 @@ memcached-slabs.obj: slabs.c
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o memcached-slabs.obj `if test -f 'slabs.c'; then $(CYGPATH_W) 'slabs.c'; else $(CYGPATH_W) '$(srcdir)/slabs.c'; fi`
+ 
++memcached-filter.obj: filter.c
++@am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT memcached-filter.obj -MD -MP -MF $(DEPDIR)/memcached-filter.Tpo -c -o memcached-filter.obj `if test -f 'filter.c'; then $(CYGPATH_W) 'filter.c'; else $(CYGPATH_W) '$(srcdir)/filter.c'; fi`
++@am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached-filter.Tpo $(DEPDIR)/memcached-filter.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='filter.c' object='memcached-filter.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o memcached-filter.obj `if test -f 'filter.c'; then $(CYGPATH_W) 'filter.c'; else $(CYGPATH_W) '$(srcdir)/filter.c'; fi`
++
+ memcached-items.o: items.c
+ @am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(memcached_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT memcached-items.o -MD -MP -MF $(DEPDIR)/memcached-items.Tpo -c -o memcached-items.o `test -f 'items.c' || echo '$(srcdir)/'`items.c
+ @am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached-items.Tpo $(DEPDIR)/memcached-items.Po
+@@ -691,6 +712,13 @@ memcached_debug-slabs.o: slabs.c
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -c -o memcached_debug-slabs.o `test -f 'slabs.c' || echo '$(srcdir)/'`slabs.c
+ 
++memcached_debug-filter.o: filter.c
++@am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -MT memcached_debug-filter.o -MD -MP -MF $(DEPDIR)/memcached_debug-filter.Tpo -c -o memcached_debug-filter.o `test -f 'filter.c' || echo '$(srcdir)/'`filter.c
++@am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached_debug-filter.Tpo $(DEPDIR)/memcached_debug-filter.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='filter.c' object='memcached_debug-filter.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -c -o memcached_debug-filter.o `test -f 'filter.c' || echo '$(srcdir)/'`filter.c
++
+ memcached_debug-slabs.obj: slabs.c
+ @am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -MT memcached_debug-slabs.obj -MD -MP -MF $(DEPDIR)/memcached_debug-slabs.Tpo -c -o memcached_debug-slabs.obj `if test -f 'slabs.c'; then $(CYGPATH_W) 'slabs.c'; else $(CYGPATH_W) '$(srcdir)/slabs.c'; fi`
+ @am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached_debug-slabs.Tpo $(DEPDIR)/memcached_debug-slabs.Po
+@@ -698,6 +726,13 @@ memcached_debug-slabs.obj: slabs.c
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -c -o memcached_debug-slabs.obj `if test -f 'slabs.c'; then $(CYGPATH_W) 'slabs.c'; else $(CYGPATH_W) '$(srcdir)/slabs.c'; fi`
+ 
++memcached_debug-filter.obj: filter.c
++@am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -MT memcached_debug-filter.obj -MD -MP -MF $(DEPDIR)/memcached_debug-filter.Tpo -c -o memcached_debug-filter.obj `if test -f 'filter.c'; then $(CYGPATH_W) 'filter.c'; else $(CYGPATH_W) '$(srcdir)/filter.c'; fi`
++@am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached_debug-filter.Tpo $(DEPDIR)/memcached_debug-filter.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='filter.c' object='memcached_debug-filter.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -c -o memcached_debug-filter.obj `if test -f 'filter.c'; then $(CYGPATH_W) 'filter.c'; else $(CYGPATH_W) '$(srcdir)/filter.c'; fi`
++
+ memcached_debug-items.o: items.c
+ @am__fastdepCC_TRUE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(memcached_debug_CFLAGS) $(CFLAGS) -MT memcached_debug-items.o -MD -MP -MF $(DEPDIR)/memcached_debug-items.Tpo -c -o memcached_debug-items.o `test -f 'items.c' || echo '$(srcdir)/'`items.c
+ @am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/memcached_debug-items.Tpo $(DEPDIR)/memcached_debug-items.Po
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/memcached.c memcached-1.4.13/memcached.c
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/memcached.c	2012-01-28 14:37:59.000000000 -0800
++++ memcached-1.4.13/memcached.c	2013-07-09 06:51:03.000000000 -0700
+@@ -22,6 +22,7 @@
+ #include <sys/uio.h>
+ #include <ctype.h>
+ #include <stdarg.h>
++#include "filter.h"
+ 
+ /* some POSIX systems need the following definition
+  * to get mlockall flags out of sys/mman.h.  */
+@@ -2704,6 +2705,190 @@ static void process_stat(conn *c, token_
+ }
+ 
+ /* ntokens is overwritten here... shrug.. */
++static inline int process_filterget_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas) {
++    token_t tmptokens[MAX_TOKENS];
++    size_t tmpntokens = ntokens;
++    char *tmpkey_token_value = NULL;
++    char *key;
++    size_t nkey;
++    int i = 0;
++    int j = 0;
++    item *it = NULL;
++    item *tmp_it = NULL;
++    token_t *key_token = NULL;
++    void **msglist = NULL;
++    int msglistlen = 0;
++    int get_cmds = 0;
++    int get_misses = 0;
++    int ret = 0;
++    int keys_len = 0;
++    char *keys_arr = NULL;
++    char *flibname = NULL;
++    void *flib = NULL;
++    int numParam = 0;
++    char **params = NULL;
++    int key_token_pos = KEY_TOKEN;
++    assert(c != NULL);
++
++
++    if (return_cas || !is_filtering_enabled())
++        return FILTERGET_FAIL; /* try normal get */
++
++    memcpy(tmptokens, tokens, tmpntokens * sizeof(token_t));
++
++    flibname = (&tmptokens[1])->value;
++    if (strncmp(flibname + (&tmptokens[1])->length - 3, ".so", 3) == 0) {
++        numParam = atoi((&tmptokens[2])->value);
++        // printf("flibname: %s, numParam: %d\n", flibname, numParam);
++        params = (char **) malloc(sizeof (char *) * numParam);
++        if (params == NULL) {
++            out_string(c, "SERVER_ERROR out of memory processing get request");
++            return FILTERGET_SUCCESS; /* no need to try normal get */
++        }
++        if (numParam > 4) {
++            out_string(c, "CLIENT_ERROR number of parameters greater than 4");
++            return FILTERGET_SUCCESS; /* no need to try normal get */
++        }
++        for (j = 0; j < numParam; j++) {
++            params[j] = (&tmptokens[3 + j])->value;
++            // printf("params[%d]: %s\n", j + 1, params[j]);
++        }
++        flib = get_flib(flibname);
++        key_token_pos = 3 + j;
++    } else {
++        flib = get_flib("default");
++        // out_string(c, "CLIENT_ERROR filter library not supplied");
++        // return FILTERGET_SUCCESS; /* no need to try normal get */
++    }
++    if (flib == NULL) {
++        out_string(c, "CLIENT_ERROR filter library does not exist");
++        return FILTERGET_SUCCESS; /* no need to try normal get */
++    }
++    key_token = &tmptokens[key_token_pos];
++    do {
++        while(key_token->length != 0) {
++            key = key_token->value;
++            nkey = key_token->length;
++            if (nkey > KEY_MAX_LENGTH) {
++                out_string(c, "CLIENT_ERROR bad command line format");
++                return FILTERGET_SUCCESS; /* no need to try normal get */
++            }
++            it = item_get(key, nkey);
++            if (it) {
++                if (i >= c->isize) {
++                    item **new_list = realloc(c->ilist, sizeof(item *) * c->isize * 2);
++                    if (new_list) {
++                        c->isize *= 2;
++                        c->ilist = new_list;
++                    } else {
++                        item_remove(it);
++                        break;
++                    }
++                }
++                if (settings.verbose > 1)
++                    fprintf(stderr, ">%d using key %s for filtering\n", c->sfd, ITEM_key(it));
++                ret = addto_msglist(flib, &msglist, &msglistlen, i, it->msg, ITEM_data(it), it->nbytes);
++                if (ret != 0)
++                    break;
++                *(c->ilist + i) = it;
++                i++;
++                keys_len += it->nkey;
++                tmp_it = it;
++                MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,
++                                    it->nbytes, ITEM_get_cas(it));
++            } else {
++                get_misses++;
++                MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
++            }
++            get_cmds++;
++            key_token++;
++        }
++        if (ret != 0)
++            break;
++
++        /*
++         * If the command string hasn't been fully processed, get the next set
++         * of tokens.
++         */
++        if (key_token->value != NULL) {
++            if (tmpkey_token_value == NULL) {
++                tmpkey_token_value = strdup(key_token->value);
++                if (tmpkey_token_value == NULL) {
++                    ret = 1;
++                    break;
++                }
++                tmpntokens = tokenize_command(tmpkey_token_value, tmptokens, MAX_TOKENS);
++            } else {
++                tmpntokens = tokenize_command(key_token->value, tmptokens, MAX_TOKENS);
++            }
++            key_token = tmptokens;
++        }
++    } while(key_token->value != NULL);
++
++    if (tmpkey_token_value != NULL)
++        free(tmpkey_token_value);
++
++    if (c != NULL && msglist != NULL && tmp_it != NULL && i > 0 && ret == 0) {
++        if (get_misses == 0)
++            ret = add_filtered_msg(flib, c, &msglist, i, tmp_it, "ALLKEYS", strlen("ALLKEYS"), (add_iov_ptr) add_iov, numParam, params);
++        else
++            ret = add_filtered_msg(flib, c, &msglist, i, tmp_it, "NOTALLKEYS", strlen("NOTALLKEYS"), (add_iov_ptr) add_iov, numParam, params);
++    }
++    if (params != NULL)
++        free(params);
++
++    if (ret != 0) {
++        for (j = 0; j < i; j++) {
++            it = c->ilist[j];
++            item_remove(it);
++        } 
++        free_msglist(flib, &msglist, i);
++        if (keys_arr != NULL)
++            free(keys_arr);
++        if (ret == 2) {
++            out_string(c, "SERVER_ERROR out of memory writing get response");
++            return FILTERGET_SUCCESS; /* no need to try normal get */
++        } else
++            return FILTERGET_FAIL; /* try normal get */
++    }
++
++    c->icurr = c->ilist;
++    c->ileft = i;
++
++    /* Update stats */
++    pthread_mutex_lock(&c->thread->stats.mutex);
++    c->thread->stats.get_misses += get_misses;
++    c->thread->stats.get_cmds += get_cmds;
++    for (j = 0; j < i; j++) {
++        it = c->ilist[j];
++        c->thread->stats.slab_stats[it->slabs_clsid].get_hits++;
++        if (settings.detail_enabled)
++            stats_prefix_record_get(ITEM_key(it), it->nkey, NULL != it);
++        item_update(it);
++    }
++    pthread_mutex_unlock(&c->thread->stats.mutex);
++
++    if (settings.verbose > 1)
++        fprintf(stderr, ">%d END\n", c->sfd);
++
++    /*
++        If the loop was terminated because of out-of-memory, it is not
++        reliable to add END\r\n to the buffer, because it might not end
++        in \r\n. So we send SERVER_ERROR instead.
++    */
++    if (key_token->value != NULL || add_iov(c, "END\r\n", 5) != 0
++        || (IS_UDP(c->transport) && build_udp_headers(c) != 0)) {
++        out_string(c, "SERVER_ERROR out of memory writing get response");
++    }
++    else {
++        conn_set_state(c, conn_mwrite);
++        c->msgcurr = 0;
++    }
++
++    return FILTERGET_SUCCESS; /* no need to try normal get */
++}
++
++/* ntokens is overwritten here... shrug.. */
+ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas) {
+     char *key;
+     size_t nkey;
+@@ -2713,6 +2898,9 @@ static inline void process_get_command(c
+     char *suffix;
+     assert(c != NULL);
+ 
++    if (FILTERGET_SUCCESS == process_filterget_command(c, tokens, ntokens, return_cas))
++        return;
++    
+     do {
+         while(key_token->length != 0) {
+ 
+@@ -3244,7 +3432,13 @@ static void process_command(conn *c, cha
+     }
+ 
+     ntokens = tokenize_command(command, tokens, MAX_TOKENS);
++
+     if (ntokens >= 3 &&
++        (strcmp(tokens[COMMAND_TOKEN].value, "fget") == 0)) {
++
++        process_filterget_command(c, tokens, ntokens, false);
++
++    } else if (ntokens >= 3 &&
+         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
+          (strcmp(tokens[COMMAND_TOKEN].value, "bget") == 0))) {
+ 
+@@ -3866,6 +4060,8 @@ static void drive_machine(conn *c) {
+ 
+         case conn_nread:
+             if (c->rlbytes == 0) {
++                item *it = c->item;
++                deserialize_item_data(ITEM_data(it), it->nbytes, &it->msg);
+                 complete_nread(c);
+                 break;
+             }
+@@ -4014,6 +4210,10 @@ static void drive_machine(conn *c) {
+                     } else {
+                         conn_set_state(c, conn_new_cmd);
+                     }
++                    if (c->filteredmsg != NULL) {
++                        free(c->filteredmsg);
++                        c->filteredmsg = NULL;
++                    }
+                 } else if (c->state == conn_write) {
+                     if (c->write_and_free) {
+                         free(c->write_and_free);
+@@ -4510,6 +4710,18 @@ static void usage(void) {
+            "                Set this based on \"STAT hash_power_level\" before a \n"
+            "                restart.\n"
+            );
++    printf("-x <num> -y <filter library path>\n"
++           "              Enable data filtering at server - helps in multi-get operations\n"
++           "              <num> = 1 - Data filtering at server enable (no deserialized data)\n"
++           "                          Data deserialized at the time of query processing\n"
++           "              <num> = 2 - Data filtering at server enable (with deserialized data)\n"
++           "                          Uses more memory but gives better performance. Avoids data\n"
++           "                          deserialization at the time of query processing and\n"
++           "                          saves CPU cycles\n"
++           "              <filter library path> - path of filter library 'libfilter.so'\n"
++           "                          This library implements filtering functions and data\n"
++           "                          serialization/deserialization functions\n"
++           );
+     return;
+ }
+ 
+@@ -4782,6 +4994,8 @@ int main (int argc, char **argv) {
+           "I:"  /* Max item size */
+           "S"   /* Sasl ON */
+           "o:"  /* Extended generic options */
++          "x:"  /* Enable data filtering at server - helps in multi-get operations */
++          "y:"  /* Enable data filtering at server - filter library path */
+         ))) {
+         switch (c) {
+         case 'a':
+@@ -4995,12 +5209,23 @@ int main (int argc, char **argv) {
+ 
+             }
+             break;
++        case 'x':
++            if (set_multi_get_opt_flags(optarg) == 1)
++                return 1;
++            break;
++        case 'y':
++            if (set_multi_get_opt_vars(optarg) == 1)
++                return 1;
++            break;
+         default:
+             fprintf(stderr, "Illegal argument \"%c\"\n", c);
+             return 1;
+         }
+     }
+ 
++    if (set_function_pointers() == 1)
++        return 1;
++
+     /*
+      * Use one workerthread to serve each UDP port if the user specified
+      * multiple ports
+diff -rupN /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/memcached.h memcached-1.4.13/memcached.h
+--- /homes/sunillp/MODIFIED_FILES/Original_Memcached/MemcachedOriginal/memcached-1.4.13/memcached.h	2012-01-10 15:09:09.000000000 -0800
++++ memcached-1.4.13/memcached.h	2013-06-22 00:45:54.000000000 -0700
+@@ -324,6 +324,7 @@ typedef struct _stritem {
+     struct _stritem *next;
+     struct _stritem *prev;
+     struct _stritem *h_next;    /* hash chain next */
++    void            *msg;       /* deserialized message */
+     rel_time_t      time;       /* least recent access */
+     rel_time_t      exptime;    /* expire time */
+     int             nbytes;     /* size of data */
+@@ -388,6 +389,7 @@ struct conn {
+ 
+     char   *ritem;  /** when we read in an item's value, it goes here */
+     int    rlbytes;
++    char   *filteredmsg;
+ 
+     /* data for the nread state */
+ 

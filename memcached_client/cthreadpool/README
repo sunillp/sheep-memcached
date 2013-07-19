@@ -1,0 +1,16 @@
+README:
+We are using "cthreadpool" (multi-threading code) that was developed by "Tomer Heber (heber.tomer@gmail.com)".
+"cthreadpool" was downloaded from web where it was freely available. Files under "cthreadpool" did not contain
+any copyright, so we are using it here and distributing with our code basically multi-threaded
+memcached_client and memcached_client_write. However, we have slighlty modified the code to suit our
+requirements.
+
+====================================================================================
+
+Use following commands to build threadpool:
+
+rm *.o
+
+rm example
+
+gcc -c example.c; gcc -c threadpool.c; gcc -o example example.o threadpool.o -lpthread

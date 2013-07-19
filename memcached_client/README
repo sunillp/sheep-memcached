@@ -1,0 +1,22 @@
+README:
+We are using "cthreadpool" (multi-threading code) that was developed by "Tomer Heber (heber.tomer@gmail.com)".
+"cthreadpool" was downloaded from web where it was freely available. Files under "cthreadpool" did not contain
+any copyright, so we are using it here and distributing with our code basically multi-threaded
+memcached_client and memcached_client_write. However, we have slighlty modified the code to suit our
+requirements.
+
+==============================================================================
+
+Use following commands to build memcached_client and memcached_client_write:
+
+rm *.o
+
+rm memcached_client memcached_client_write
+
+gcc -Wall -fPIC -c `pwd`/../libfilter/sheep.pb-c.c
+gcc -Wall -fPIC -c memcached_client_write.c
+gcc -Wall -fPIC -c memcached_client.c
+
+gcc -o memcached_client_write sheep.pb-c.o cthreadpool/threadpool.o memcached_client_write.o -lprotobuf-c -lmemcached -lpthread
+
+gcc -o memcached_client sheep.pb-c.o cthreadpool/threadpool.o memcached_client.o -lprotobuf-c -lmemcached -lpthread

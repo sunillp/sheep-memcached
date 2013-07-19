@@ -1,0 +1,11 @@
+Use following commands to build filter library:
+
+rm *.o *.so
+
+rm sheep.pb-c*
+
+protoc-c --c_out=. sheep.proto
+
+gcc -Wall -fPIC -c sheep.pb-c.c sheepfilter.c; gcc -shared -o libsheepfilter.so sheep.pb-c.o sheepfilter.o -lprotobuf-c; mv libsheepfilter.so libfilter.so
+
+gcc -Wall -fPIC -c sheep.pb-c.c sheepfilter_variable_countlim.c; gcc -shared -o libsheepfilter_variable_countlim.so sheep.pb-c.o sheepfilter_variable_countlim.o -lprotobuf-c; mv libsheepfilter_variable_countlim.so libfilter_variable_countlim.so
