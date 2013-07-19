@@ -63,7 +63,7 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
      - # ./memcached -M -m 4000
    - On client (c1), store server information in a file called "host-port.txt" in form "<server-name> <port-number>" as shown below:
      - # cat host-port.txt
-         s1 11211
+       s1 11211
        (Note: more servers can be added, one line per each server)
    - On client (c1) 
      - # ./memcached_client_write 10000 10 host-port.txt
