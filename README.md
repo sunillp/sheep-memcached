@@ -61,25 +61,21 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
 1. Testing performance of regular memcached (without our changes):
    - Start memcached server on (s1) as shown below.
      # ./memcached -M -m 4000
-
    - On client (c1), store server information in a file called "host-port.txt" in form "<server-name> <port-number>" as shown below:
      # cat host-port.txt
        s1 11211
      (Note: more servers can be added, one line per each server)
-
    - On client (c1) 
      # ./memcached_client_write 10000 10 host-port.txt
        numUsers: 10000, recPerUser: 10, hostPortFile: host-port.txt, #servers: 1
        s1 11211
      (This writes data for 10000 users/keys in memcached server. Each user's data/value has 10 records. "host-port.txt" contains server info. like "s1 11211")
      (Note: issue "./memcached_client_write" to see usage of this command and to try different parameters/values)
-
      Then issue following command to see the throughput:
      # ./memcached_client 10000 100 10 4 10000 host-port.txt
        numUsers: 10000, friendsPerUser: 100, recPerUser: 10, numThreads: 4, numReads: 10000, hostPortFile: host-port.txt, #servers: 1
        s1 11211
        < -- perf. result -- >
-
      (Above command issues async. multi-get queries for 10000 users, each user has 100 friends (i.e. each multi-get query requests data of 100 keys), there are 10 records per user/friend (means 1000 records are read/processed per multi-get query). 4 threads are used by client to issue multi-get queries and process the response asynchronously. 10000 multi-get asyn. multi-threaded queries are issued. "host-port.txt" contains server info. like "s1 11211")
      (Note: issue "./memcached_client" to see usage of this command and to try different parameters/values)
     
@@ -87,7 +83,6 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
    - On server (s1)
      # ./memcached -M -m 4000 -x 1 -y `pwd`  
      (Note: store filter library "libfilter.so" in the same directory on memcached server where "memcached" binary is stored and from where "memcached" is launched)         
-
    - On client (c1)
      # ./memcached_client_write 10000 10 host-port.txt
      # ./memcached_client 10000 100 10 4 10000 host-port.txt
@@ -97,7 +92,6 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
    - On server (s1)
      # ./memcached -M -m 4000 -x 2 -y `pwd`  
      (Note: store filter library "libfilter.so" in the same directory on memcached server where "memcached" binary is stored and from where "memcached" is launched)         
-
    - On client (c1)
      # ./memcached_client_write 10000 10 host-port.txt
      # ./memcached_client 10000 100 10 4 10000 host-port.txt
