@@ -34,6 +34,17 @@ More details about "changes in memcached", "overall design", "filter library des
 BUILDING / TESTING:
 ===================
 
+Assuming we use single client (c1) and single server (s1):
+
+Install following protobuf packages on client (c1) and server (s1). We use protobuf for encoding/decoding network messages/records.   
+$ sudo yum install protobuf   
+$ sudo yum install protobuf-compiler   
+$ sudo yum install protobuf-devel   
+$ sudo yum install protobuf-c-devel   
+
+Install libmemcached library (C based client for memcached) on client (c1):   
+- Download libmemcached-1.0.16.tar, untar, build, "./configure", "make", "sudo make install"    
+
 Here we have provided three things:
 ===================================
 
@@ -55,16 +66,6 @@ To run/test:
 ============
 
 Assuming we use single client (c1) and single server (s1):
-
-Install following protobuf packages on client (c1) and server (s1). We use protobuf for encoding/decoding network messages/records.   
-$ sudo yum install protobuf   
-$ sudo yum install protobuf-compiler   
-$ sudo yum install protobuf-devel   
-$ sudo yum install protobuf-c-devel   
-
-Install libmemcached library (C based client for memcached) on client (c1):   
-- Download libmemcached-1.0.16.tar, untar, build, "./configure", "make", "sudo make install"    
-
 
 Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to return only the filtered data for multi-get queries (with single key) and not all data of all keys that it does in normal cases. We have provided a new command "fget" which specifically does this and also takes "filter-library-name" and "parameters to filtering function" as input. For this we need to modify "libmemcached" (C client for memcacched) to support "fget" command. We are in process of doing this. Once that happens, "bget" will function as it is in normal cases for multi-get queries and "fget" will provide the new functionality for multi-get queries. For more info on "fget" command, see the document "Sheep Enhancements in Memcached.docx" available in the repository.
 
