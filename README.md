@@ -60,14 +60,14 @@ Here we have provided three things:
          - "cd cthreadpool" - perform the steps given in README under memcached_client/cthreadpool/README   
          - "cd .." - perform the steps given in README under memcached_client/README - This will produce two binaries   
               - memcached_client_write - writes data of users into memcached server   
-              - memcached_client - issues multiple async. multi-get queries in a multi-threaded way. Does same processing as done by filtering library for each multi-get query i.e. reads all records, sorts them and returns top 10 records as oupput. Uses time taken to complete/process multi-get queries to measure performance i.e. throughput and latency. Can issue multi-get queries for varying number of users, friends per user, records per user, threads, and servers.
+              - memcached_client - issues multiple async. multi-get queries in a multi-threaded way. Does same processing as done by filtering library for each multi-get query i.e. reads all records, sorts them and returns top 10 records as output. Uses time taken to complete/process multi-get queries to measure performance i.e. throughput and latency. Can issue multi-get queries for varying number of users, friends per user, records per user, threads, and servers.
 
 To run/test:
 ============
 
 Assuming we use single client (c1) and single server (s1):
 
-Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to return only the filtered data for multi-get queries (with single key) and not all data of all keys that it does in normal cases. We have provided a new command "fget" which specifically does this and also takes "filter-library-name" and "parameters to filtering function" as input. For this we need to modify "libmemcached" (C client for memcacched) to support "fget" command. We are in process of doing this. Once that happens, "bget" will function as it is in normal cases for multi-get queries and "fget" will provide the new functionality for multi-get queries. For more info on "fget" command, see the document "Sheep Enhancements in Memcached.docx" available in the repository.
+Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" behaviour to return only the filtered data for multi-get queries (with single key) and not all data of all keys that it does in normal cases. We have provided a new command "fget" which specifically does this and also takes "filter-library-name" and "parameters to filtering function" as input. For this we need to modify "libmemcached" (C client for memcacched) to support "fget" command. We are in process of doing this. Once that happens, "bget" will function as it is in normal cases for multi-get queries and "fget" will provide the new functionality for multi-get queries. For more info on "fget" command, see the document "Sheep Enhancements in Memcached.docx" available in the repository.
 
 1. Testing performance of regular memcached (without our changes):
    - Start memcached server on (s1) as shown below.   
@@ -87,10 +87,10 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
      numUsers: 10000, friendsPerUser: 100, recPerUser: 10, numThreads: 4, numReads: 10000, hostPortFile: host-port.txt, #servers: 1   
      s1 11211   
      < -- perf. result -- >   
-     (Above command issues async. multi-get queries for 10000 users, each user has 100 friends (i.e. each multi-get query requests data of 100 keys), there are 10 records per user/friend (means 1000 records are read/processed per multi-get query). 4 threads are used by client to issue multi-get queries and process the response asynchronously. 10000 multi-get asyn. multi-threaded queries are issued. "host-port.txt" contains server info. like "s1 11211")   
+     (Above command issues async. multi-get queries for 10000 users, each user has 100 friends (i.e. each multi-get query requests data of 100 keys), there are 10 records per user/friend (means 1000 records are read/processed per multi-get query). 4 threads are used by client to issue multi-get queries and process response asynchronously. 10000 multi-get async. multi-threaded queries are issued. "host-port.txt" contains server info. like "s1 11211")   
      (Note: issue "./memcached_client" to see usage of this command and to try different parameters/values)
     
-2. Testing performance of memcached with our changes (doing data filtering on server): First we pass 1 to option "-x", this means in this case, data is not kept in deserialized form on memcached server. Data is deserilized at the time of query processing.
+2. Testing performance of memcached with our changes (doing data filtering on server): First we pass 1 to option "-x", this means in this case, data is not kept in deserialized form on memcached server. Data is deserialized at the time of query processing.
    - On server (s1)   
      # ./memcached -M -m 4000 -x 1 -y .   
      (Note: store filter library "libfilter.so" in the same directory on memcached server where "memcached" binary is stored and from where "memcached" is launched)         
@@ -99,7 +99,7 @@ Note: in these experiments (for option -x 1 and -x 2) we have changed "bget" to 
      # ./memcached_client 10000 100 10 4 10000 host-port.txt   
          < -- perf. result -- >
 
-3. Testing performance of memcached with our changes (doing data filtering on server): Here we pass 2 to option "-x", this means in this case, data is kept in deserialized form on memcached server. Data is not deserilized at the time of query processing and this saves lot of CPU cycles that are spent in this process in critical query processing path. However in this case memcached server uses quite a lot of additional memory though performs very well)
+3. Testing performance of memcached with our changes (doing data filtering on server): Here we pass 2 to option "-x", this means in this case, data is kept in deserialized form on memcached server. Data is not deserialized at the time of query processing and this saves lot of CPU cycles that are spent in this process in critical query processing path. However in this case memcached server uses quite a lot of additional memory though performs very well)
    - On server (s1)   
      # ./memcached -M -m 4000 -x 2 -y .    
      (Note: store filter library "libfilter.so" in the same directory on memcached server where "memcached" binary is stored and from where "memcached" is launched)         
