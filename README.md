@@ -13,8 +13,8 @@ SHEEP improves performance of multi-get queries by employing two methods:
 
 SHEEP advantages:
 
-1.	Client consolidation/Cost Reduction (with same amount of hardware we can get higher performance or with less amount of hardware we can get same performance).
-2.	Sustained high performance at peak loads. SHEEP is virtually unaffected by peak loads as it ensures that very less data flow over network from storage server to client thereby avoiding network saturation.
+1.	Sustained high performance at peak loads. SHEEP is virtually unaffected by peak loads as it ensures that very less data flow over network from storage server to client thereby avoiding network saturation.
+2.	Client consolidation/Cost Reduction: We can get good/same performance (TPT and latency) by using less number of clients => cost saving. Or get higher performance (3X to 7X) with existing number of clients Or can convert some of the clients into server and increase the cache.
 
 We have made enhancements proposed in SHEEP in memcached. This is done because of following reason:
 -	Memcached is stable, popular, tried & tested and used in many mission critical applications. It supports almost all required features like persistence, replication, data re-placement policy, concurrency control (CAS), efficient use of memory etc.
@@ -27,6 +27,7 @@ How is this different or better than Redis + Lua:
 -	As opposed to this Memcached being multi-threaded scales up well with number of cores. Each server performs “data aggregation” just once for a given query and sends very small set of filtered data to client.
 -	Besides in Memcached there is one more option that is to keep data in de-serialized form, which saves lot of CPU cycles that are generally spent in de-serializing data in query processing critical path. (Though here memcached uses quite a lot of additional memory)
 
+One apprehension about “Data aggregation on server” is that this may put additional load on server whose primary responsibility is to serve data fast. But we have found that NETWORK saturates much faster/quickly than CPU i.e. CPU is able to handle more load but network becomes a bottleneck with increased load. In our approach we try to reduce network load by increasing CPU load, thus balancing both. If system has 80% multi-get traffic, then for this pattern doing processing on server really helps. We were able to get performance that is normally obtained with 4 clients by using just 1 client (client consolidation).
 
 More details about "changes in memcached", "overall design", "filter library design", "performance improvement", and "graph partitioning" can be found in the document "Sheep Enhancements in Memcached.docx" available in the repository.
 
